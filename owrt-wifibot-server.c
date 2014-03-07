@@ -7,29 +7,32 @@
 #include <unistd.h>  /* Объявления стандартных функций UNIX */
 #include <fcntl.h>   /* Объявления управления файлами */
 #include <termios.h> /* Объявления управления POSIX-терминалом */
+#include <pthread.h>
 
 
-#define COMMAND_LENGTH 16 	// 16 byte
+#define COMMAND_LENGTH 	16 	// 16 byte
+#define SERIAL_PORT		"/dev/ttyATH0"
 
 
-int fd; 					/* Файловый дескриптор для порта */
+int fd = 0; 					/* Файловый дескриптор для порта */
 char buf[COMMAND_LENGTH]; 	/*размер зависит от размера строки принимаемых данных*/
 char *command;
+int sock;
 
 /* Open UART port*/
 int open_port(void)
 {
-	fd = open("/dev/ttyATH0", O_RDWR | O_NOCTTY | O_NDELAY); 	/*'open_port()' - Открывает последовательный порт */
+	fd = open(SERIAL_PORT, O_RDWR | O_NOCTTY | O_NDELAY); 	/*'open_port()' - Открывает последовательный порт */
 	if (fd < 0) {
-		printf("Couldn't open port.\n");
+		printf("Couldn't open port %s.\n", SERIAL_PORT);
 		return -1;
     }
     else {
         struct termios options; 			/*структура для установки порта*/
         tcgetattr(fd, &options); 			/*читает пораметры порта*/
 
-        cfsetispeed(&options, B9600); 		/*установка скорости порта*/
-        cfsetospeed(&options, B9600); 		/*установка скорости порта*/
+        cfsetispeed(&options, B115200); 		/*установка скорости порта*/
+        cfsetospeed(&options, B115200); 		/*установка скорости порта*/
 
          options.c_cflag &= ~PARENB; 		/*выкл проверка четности*/
          options.c_cflag &= ~CSTOPB; 		/*выкл 2-х стобит, вкл 1 стопбит*/
@@ -42,11 +45,53 @@ int open_port(void)
 	}
 }
 
+void * thread_telemetry(void *arg)
+{
+	//char *telemetry;
+	char telemetry[16];
+	int result;
+
+	/*
+	telemetry = "voltage=8.2\n";
+
+	do {
+		result = send(sock, telemetry, strlen(telemetry), 0);
+		puts("telemetry sent");
+		sleep(1);
+	}
+	while (result > 0);
+	*/
+
+	while (1) {
+		if (fd < 0) {
+			puts("No serial port was opened. Telemetry disabled.");
+			pthread_exit(NULL);
+		}
+		if (read(fd, telemetry, 16) < 0) {
+			printf("UART port read error!\n");
+			sleep(1);
+		}
+		else {
+			result = send(sock, telemetry, strlen(telemetry), 0);
+			if (result > 0) {
+				puts("Telemetry was sent.");
+			}
+			else {
+				puts("Telemetry send error. Telemetry disabled.");
+				pthread_exit(NULL);
+			}
+		}
+	}
+	pthread_exit(NULL);
+}
+
 int main()
 {
-    int sock, listener;
+	pthread_t telemetry_thread;
+    int listener;
     struct sockaddr_in addr;
     int bytes_read;
+    int result;
 
 	open_port();
 
@@ -73,6 +118,14 @@ int main()
             printf("accept error\n");
             return 3;
         }
+
+    	/* Telemetry thread creating */
+    	result = pthread_create(&telemetry_thread, NULL, thread_telemetry, NULL);
+    	if (result != 0) {
+    		perror("Creating the thread");
+    		return 1;
+    	}
+
 		/* Get buf from socket */
 		while((bytes_read = recv(sock, buf, COMMAND_LENGTH, 0)) > 0 ) {
 			//printf("%d\n",bytes_read); // debug
